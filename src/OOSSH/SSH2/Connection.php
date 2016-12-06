@@ -39,6 +39,14 @@ class Connection
 
     protected $commands;
 
+    protected $output;
+
+    protected $globalOutput;
+
+    protected $isShell;
+
+    protected $shellStream;
+
     /**
      * @param string $hostname
      * @param int $port
@@ -51,9 +59,13 @@ class Connection
         $this->isConnected     = false;
         $this->isInBlock       = false;
         $this->commands        = array();
+        $this->isShell         = false;
+        $this->globalOutput    = '';
     }
 
     /**
+     * Initiate connection to the server.
+     *
      * @throws \OOSH\Exception\ConnectionRefused
      *
      * @return Connection
@@ -71,6 +83,14 @@ class Connection
         return $this;
     }
 
+    /**
+     * Verify if fingerprint is correct.
+     *
+     * @param $fingerprint
+     * @param [$flags]
+     * @throws Exception\BadFingerprint
+     * @return Connection
+     */
     public function check($fingerprint, $flags = null)
     {
         $flags = null === $flags ? self::FINGERPRINT_MD5 | self::FINGERPRINT_HEX : $flags;
@@ -82,6 +102,12 @@ class Connection
         return $this;
     }
 
+    /**
+     * Login to the server.
+     *
+     * @param $authentication OOSSH\Authentication\Interface implementation
+     * @return Connection
+     */
     public function authenticate(AuthenticationInterface $authentication)
     {
         $authentication->authenticate($this->resource);
@@ -90,21 +116,68 @@ class Connection
         return $this;
     }
 
-    public function exec($command, $callback = null)
+    /**
+     * Set execution of commands using a shell.
+     *
+     * @param $waitForOptions
+     * @return Connection
+     */
+    public function setShell($waitForOptions)
     {
-        if ($this->isInBlock) {
-            return $this->addCommand($command);
-        }
+        $this->isShell = true;
 
-        $stream = \ssh2_exec($this->resource, $command);
+        $this->shellStream = ssh2_shell($this->resource);
 
-        if (null !== $callback) {
-            $this->callCallback($stream, $callback);
-        }
+        // collect login screen so it won't be included in next exec
+        $this->output = '';
+        $stdio  = \ssh2_fetch_stream($this->shellStream, SSH2_STREAM_STDIO);
+        $stderr = \ssh2_fetch_stream($this->shellStream, SSH2_STREAM_STDERR);
+        $this->waitFor($stdio, $waitForOptions);
 
         return $this;
     }
 
+    /**
+     * Send a command and gather output (but don't return output yet).
+     *
+     * @param $command
+     * @param [$callback] callback to consume commands
+     * @param [$waitForOptions]
+     * @return Connection
+     */
+    public function exec($command, $callback = null, $waitForOptions = [])
+    {
+        if ($this->isInBlock)
+        {
+            return $this->addCommand($command);
+        }
+
+        if ($this->isShell)
+        {
+            fwrite($this->shellStream, $command."\n");
+            $stream = $this->shellStream;
+        }
+        else
+        {
+            $stream = \ssh2_exec($this->resource, $command);
+        }
+
+        // call callback, or null callback to collect output
+        if ($callback === null)
+            $this->callCallback($stream, function ($stdio, $stderr) {}, $waitForOptions);
+        else
+            $this->callCallback($stream, $callback, $waitForOptions);
+
+        $this->addCommand($command);
+
+        return $this;
+    }
+
+    /**
+     * Start block execution by gathering exec commands.
+     *
+     * @return Connection
+     */
     public function begin()
     {
         $this->isInBlock = true;
@@ -112,16 +185,28 @@ class Connection
         return $this;
     }
 
-    public function end($callback = null)
+    /**
+     * End block execution by sending commands to server and collecting output.
+     *
+     * @param [$callback]
+     * @param [$waitForOptions]
+     * @return Connection
+     */
+    public function end($callback = null, $waitForOptions = null)
     {
-        $stream = fopen(sprintf('ssh2.shell://%s/xterm', $this->resource), 'r+');
+        $stream = ssh2_shell($this->resource);
 
         foreach ($this->commands as $command) {
             fwrite($stream, $command."\n");
         }
 
-        if (null !== $callback) {
-            $this->callCallback($stream, $callback);
+        if (null !== $callback)
+        {
+            $this->callCallback($stream, $callback, $waitForOptions);
+        }
+        else
+        {
+            $this->callCallback($stream, function ($stdio, $stderr) {}, $waitForOptions);
         }
 
         $this->isInBlock = false;
@@ -130,6 +215,13 @@ class Connection
         return $this;
     }
 
+    /**
+     * Helper function to add commands.
+     * Used in block execution and to remove commands in output.
+     *
+     * @param $command
+     * @return Connection
+     */
     protected function addCommand($command)
     {
         $this->commands[] = $command;
@@ -137,17 +229,115 @@ class Connection
         return $this;
     }
 
-    protected function callCallback($stream, $callback)
+    /**
+     * Helper function to wait for output by characters or time
+     *
+     * @param $stdio Output stream
+     * @param [$waitForOptions] 'start', 'end', 'char', or 'wait_before_end'
+     *            start - wait for regex before sending commands
+     *            end - wait for regex before stopping the collection of output
+     *            char - true if wait for at least a character collecting/ending
+     *            wait_before_end - time to wait before ending collection
+     * @return Connection
+     */
+    protected function waitFor($stdio, $waitForOptions = [])
     {
-        if (!is_callable($callback)) {
+        // use default options or the ones set
+        $default_options = [
+                    'start' => null,
+                    'end' => null,
+                    'char' => false,
+                    'wait_before_end' => 10000
+                ];
+        foreach($default_options as $key => $value)
+        {
+            if (isset($waitForOptions[$key]))
+                $$key = $waitForOptions[$key];
+            else
+                $$key = $value;
+        }
+
+        // collect output
+        $this->output = '';
+        $start_cnt = 0;
+        $end_cnt = 0;
+        do
+        {
+            // collect output
+            $current_output      = stream_get_contents($stdio);
+            $this->output       .= $current_output;
+            $this->globalOutput .= $current_output;
+
+            // Starting phase
+            // wait for $start regex before continuing
+            if ($start !== null && !preg_match($start, $this->output))
+            {
+                usleep(1000);
+                continue;
+            }
+            // wait for seven blanks before continuing
+            if ($current_output == '' && $start_cnt < 7)
+            {
+                // if char is set, wait at least a character before continuing
+                if ($char === false)
+                    $start_cnt++;
+            }
+
+            // found a character, continue
+            if ($current_output != '')
+            {
+                $start_cnt = 7;
+            }
+
+            // Ending phase
+            // when no more outputs, start ending
+            if ($current_output == '' && $start_cnt >= 7)
+            {
+                usleep($wait_before_end);
+                $end_cnt++;
+            }
+            // when match regex or 7 no outputs, stop collecting
+            if (($end === null && $end_cnt >= 7) ||
+                    ($end !== null && preg_match($end, $this->output)))
+                break;
+            usleep(1000);
+        }
+        while (true);
+
+        return $this;
+    }
+
+    /**
+     * Call callback to get results/output
+     *
+     * @param $stream ssh2 stream
+     * @param $callback in format function ($out, $err) {}
+     * @param [$waitForOptions]
+     * @return Connection
+     */
+    protected function callCallback($stream, $callback, $waitForOptions = [])
+    {
+        if (!is_callable($callback))
+        {
             throw new \InvalidArgumentException('$callback must be a callable');
         }
 
         $stdio  = \ssh2_fetch_stream($stream, SSH2_STREAM_STDIO);
         $stderr = \ssh2_fetch_stream($stream, SSH2_STREAM_STDERR);
-        stream_set_blocking($stdio, 1);
-        stream_set_blocking($stderr, 1);
-        call_user_func($callback, stream_get_contents($stdio), stream_get_contents($stderr));
+
+        if ($this->isInBlock || $this->isShell)
+        {
+            $this->waitFor($stdio, $waitForOptions);
+        }
+        else
+        {
+            stream_set_blocking($stdio, true);
+            stream_set_blocking($stderr, true);
+            $this->output = '';
+            $this->output = stream_get_contents($stdio);
+        }
+
+        call_user_func($callback, $this->output, stream_get_contents($stderr));
 
         return $this;
     }
@@ -168,8 +358,61 @@ class Connection
         return $this->isAuthenticated;
     }
 
+    /**
+     * @return boolean
+     */
     public function isConnected()
     {
         return $this->isConnected;
+    }
+
+    /**
+     * return output of exec command
+     *
+     * @param $options['just_output'] set if output will include commmands
+     *                                & prompts or not
+     * @return string
+     */
+    public function getOutput($options = [])
+    {
+        $default_options = ['just_output' => true];
+        foreach($default_options as $key => $value)
+        {
+            if (isset($options[$key]))
+                $$key = $options[$key];
+            else
+                $$key = $value;
+        }
+
+        if ($just_output)
+        {
+            $output_array = explode("\n", $this->output);
+            foreach($output_array as $key => $line)
+            {
+                foreach($this->commands as $command)
+                {
+                    if (strpos($line, $command) === 0)
+                    {
+                        // remove command from output
+                        unset($output_array[$key]);
+                    }
+                }
+            }
+            // remove last line
+            unset($output_array[count($output_array)]);
+            return join("\n", $output_array);
+        }
+
+        return $this->output;
+    }
+
+    /**
+     * Get all output since login
+     *
+     * @return string
+     */
+    public function getGlobalOutput()
+    {
+        return $this->globalOutput;
     }
 }

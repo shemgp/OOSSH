@@ -1,15 +1,15 @@
 {
     "version": "1.0.0",
-    "name": "youknowriad/oossh",
+    "name": "shemgp/oossh",
     "description": "Object Oriented SSH for PHP",
     "keywords": ["ssh"],
-    "homepage": "https://github.com/frequence-web/OOSSH",
+    "homepage": "https://github.com/shemgp/OOSSH",
     "type": "library",
     "license": "MIT",
     "authors": [{
-        "name": "Yohan GIARELLI",
-        "email": "yohan@giarel.li",
-        "homepage": "http://yohan.giarel.li"
+        "name": "Shem Pasamba",
+        "email": "shemgp@gmail.com",
+        "homepage": "http://github/shemgp/OOSSH"
     }],
 
     "autoload": {
