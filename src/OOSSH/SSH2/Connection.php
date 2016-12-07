@@ -415,4 +415,10 @@ class Connection
     {
         return $this->globalOutput;
     }
+    
+    public function disconnect()
+    {
+        ssh2_exec($this->resource, 'exit');
+        unset($this->resource);
+    }
 }
