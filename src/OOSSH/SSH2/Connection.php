@@ -47,11 +47,13 @@ class Connection
 
     protected $shellStream;
 
+    protected $microseconds_timeout;
+
     /**
      * @param string $hostname
      * @param int $port
      */
-    public function __construct($hostname, $port = 22)
+    public function __construct($hostname, $port = 22, $microseconds_timeout = 10000000)
     {
         $this->hostname        = $hostname;
         $this->port            = $port;
@@ -61,6 +63,7 @@ class Connection
         $this->commands        = array();
         $this->isShell         = false;
         $this->globalOutput    = '';
+        $this->microseconds_timeout = $microseconds_timeout;
     }
 
     /**
@@ -261,8 +264,12 @@ class Connection
         $this->output = '';
         $start_cnt = 0;
         $end_cnt = 0;
+        $ending_time = time() + ($this->microseconds_timeout / 1000000);
         do
         {
+            if (time() >= $ending_time)
+                throw new Exception('Timeout reached');
+
             // collect output
             $current_output      = stream_get_contents($stdio);
             $this->output       .= $current_output;
