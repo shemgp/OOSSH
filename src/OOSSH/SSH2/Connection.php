@@ -268,7 +268,7 @@ class Connection
         do
         {
             if (time() >= $ending_time)
-                throw new Exception('Timeout reached');
+                throw new \Exception('Timeout reached');
 
             // collect output
             $current_output      = stream_get_contents($stdio);
