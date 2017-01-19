@@ -422,10 +422,25 @@ class Connection
     {
         return $this->globalOutput;
     }
-    
+
+
+    /**
+     * Disconect the resource
+     *
+     */
     public function disconnect()
     {
         ssh2_exec($this->resource, 'exit');
         unset($this->resource);
+    }
+
+    /**
+     * Set timeout in microseconds
+     *
+     * @param $microsecons_timeout Timeout in microseconds
+     */
+    public function setMicrosecondsTimeout($microseconds_timeout)
+    {
+        $this->microseconds_timeout = $microseconds_timeout;
     }
 }
