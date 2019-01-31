@@ -277,11 +277,24 @@ class Connection
 
             // Starting phase
             // wait for $start regex before continuing
-            if ($start !== null && !preg_match($start, $this->output))
+            try
+            {
+                $start = substr($start, 1, strlen($start) - 2);
+                $start = preg_replace('/^\//', '\/', $start);
+                $start = preg_replace('/([^\\\])\//', '$1\/', $start);
+                $start = '/'.$start.'/';
+                $match = preg_match($start, $this->output);
+            }
+            catch (\Exception $e)
+            {
+                throw new \Exception('Regex error with string: '.$start);
+            }
+            if ($start !== null && !$match)
             {
                 usleep(1000);
                 continue;
             }
+
             // wait for seven blanks before continuing
             if ($current_output == '' && $start_cnt < 7)
             {
